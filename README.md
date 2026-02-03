@@ -1,6 +1,6 @@
 # Portuguese Tourism RAG Data Pipeline
 
-A beginner-friendl pipeline for collecting data to feed a RAG (Retrieval-Augmented Generation) system about Portuguese Tourism.
+A beginner-friendly pipeline for collecting data to feed a RAG (Retrieval-Augmented Generation) system about Portuguese Tourism.
 
 > **📖 See [GUIDELINES.md](GUIDELINES.md) for development rules** (simple code, verbose logging, heavy comments)
 
