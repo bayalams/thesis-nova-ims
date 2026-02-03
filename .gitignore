@@ -1,0 +1,6 @@
+.venv/
+archive/
+chromadb/
+data/*
+.env
+__pycache__/
