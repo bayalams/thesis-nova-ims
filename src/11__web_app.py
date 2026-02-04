@@ -42,7 +42,7 @@ import os          # Built-in library to work with files and folders
 # External libraries (install with pip)
 import chromadb                    # Vector database
 from flask import Flask, request, render_template_string  # Web framework
-from openai import OpenAI          # OpenAI API
+from openai import AzureOpenAI
 
 # =============================================================================
 # GLOBAL FLAG FOR WIKIPEDIA ARTICLES
@@ -60,9 +60,9 @@ USE_WIKIPEDIA = False
 CHROMA_DIR = "data/vectordb"
 COLLECTION_NAME = "tourism_knowledge"
 
-# OpenAI settings
-EMBEDDING_MODEL = "text-embedding-3-small"
-LLM_MODEL = "gpt-4o-mini"
+# AzureOpenAI settings
+EMBEDDING_MODEL = os.environ.get("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
+LLM_MODEL = os.environ.get("AZURE_LLM_DEPLOYMENT", "gpt-5")
 
 # How many documents to retrieve
 TOP_K = 10
@@ -312,19 +312,26 @@ HTML_TEMPLATE = """
 
 def get_openai_client():
     """
-    Create an OpenAI client.
+    Create an Azure OpenAI client.
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
     
-    if not api_key:
-        print("[ERROR] OpenAI API key not found!")
+    if not endpoint or not api_key:
+        print("[ERROR] Azure OpenAI credentials not found!")
         print()
-        print("Please set the OPENAI_API_KEY environment variable:")
-        print("  export OPENAI_API_KEY='your_api_key_here'")
+        print("Please set these environment variables:")
+        print("  export AZURE_OPENAI_ENDPOINT='https://your-resource.openai.azure.com/'")
+        print("  export AZURE_OPENAI_API_KEY='your-api-key'")
         print()
         raise SystemExit(1)
     
-    return OpenAI(api_key=api_key)
+    return AzureOpenAI(
+        azure_endpoint=endpoint,
+        api_key=api_key,
+        api_version=api_version
+    )
 
 
 def get_chromadb_collection():
