@@ -39,7 +39,7 @@ from pathlib import Path       # Built-in library for file path handling
 
 # External libraries (install with pip)
 import chromadb                # Vector database (pip install chromadb)
-from openai import OpenAI      # OpenAI API (pip install openai)
+from openai import AzureOpenAI
 
 # =============================================================================
 # CONFIGURATION
@@ -55,8 +55,8 @@ CHROMA_DIR = "data/vectordb"
 # Collection name in ChromaDB
 COLLECTION_NAME = "tourism_knowledge"
 
-# OpenAI embedding model
-EMBEDDING_MODEL = "text-embedding-3-small"
+# AzureOpenAI embedding model
+EMBEDDING_MODEL = os.environ.get("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
 
 # Maximum chunk size (in characters)
 # OpenAI recommends chunks of ~500-1000 tokens
@@ -77,22 +77,29 @@ MAX_CONTENT_LENGTH = 200000
 
 def get_openai_client():
     """
-    Create an OpenAI client.
+    Create an Azure OpenAI client.
     
-    The API key is read from the OPENAI_API_KEY environment variable.
+    The credentials are read from environment variables.
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
     
-    if not api_key:
-        print("[ERROR] OpenAI API key not found!")
+    if not endpoint or not api_key:
+        print("[ERROR] Azure OpenAI credentials not found!")
         print()
-        print("Please set the OPENAI_API_KEY environment variable:")
-        print("  export OPENAI_API_KEY='your_api_key_here'")
+        print("Please set these environment variables:")
+        print("  export AZURE_OPENAI_ENDPOINT='https://your-resource.openai.azure.com/'")
+        print("  export AZURE_OPENAI_API_KEY='your-api-key'")
         print()
         raise SystemExit(1)
     
-    print("[INFO] OpenAI API key loaded")
-    return OpenAI(api_key=api_key)
+    print("[INFO] Azure OpenAI credentials loaded")
+    return AzureOpenAI(
+        azure_endpoint=endpoint,
+        api_key=api_key,
+        api_version=api_version
+    )
 
 
 def load_documents(source_filter=None):
