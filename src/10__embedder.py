@@ -302,6 +302,11 @@ def main():
         type=str,
         help="Only process articles from this source (e.g. SKIFT). Will delete and re-embed them."
     )
+    parser.add_argument(
+        "--no-chunk",
+        action="store_true",
+        help="Embed full articles without chunking (each article = 1 embedding)"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -365,9 +370,13 @@ def main():
             print()
             continue
         
-        # Chunk the document
-        chunks = chunk_text(doc["content"], MAX_CHUNK_SIZE, CHUNK_OVERLAP)
-        print(f"[INFO]   Split into {len(chunks)} chunks")
+        # Chunk the document (or use full article if --no-chunk)
+        if args.no_chunk:
+            chunks = [doc["content"]]  # Full article as single chunk
+            print(f"[INFO]   Using full article (no chunking)")
+        else:
+            chunks = chunk_text(doc["content"], MAX_CHUNK_SIZE, CHUNK_OVERLAP)
+            print(f"[INFO]   Split into {len(chunks)} chunks")
         
         # Process each chunk
         for j, chunk in enumerate(chunks):
