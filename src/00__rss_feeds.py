@@ -83,6 +83,8 @@ RSS_FEEDS = [
     {"name": "GUARDIAN_GENERAL", "url": "https://www.theguardian.com/uk/rss"},
     {"name": "GUARDIAN_TRAVEL", "url": "https://www.theguardian.com/uk/travel/rss"},
     # {"name": "TELEGRAPH", "url": "https://www.telegraph.co.uk/rss.xml"},
+    {"name": "HUFFPOST_WORLD_NEWS", "url": "https://www.huffpost.com/news/world-news/feed"},
+    {"name": "HUFFPOST_TRAVEL", "url": "https://www.huffpost.com/section/travel/feed"},
 
     # =========================================================================
     # 🇩🇪 GERMANY - News & Travel
@@ -129,10 +131,12 @@ RSS_FEEDS = [
     # 🌍 INTERNATIONAL - General News
     # =========================================================================
     {"name": "AL_JAZEERA", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
-    # {"name": "AP_NEWS", "url": "https://feedx.net/rss/ap.xml"},
+    {"name": "AP_NEWS", "url": "https://feedx.net/rss/ap.xml"},
     {"name": "EURONEWS_NEWS", "url": "https://pt.euronews.com/rss?format=mrss&level=theme&name=news"},
     {"name": "EURONEWS_TRAVEL", "url": "https://pt.euronews.com/rss?format=mrss&level=vertical&name=travel"},
-
+    {"name": "REUTERS", "url": "https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best"},
+    {"name": "FRANCE24", "url": "https://www.france24.com/en/rss"},
+    {"name": "DW_NEWS", "url": "https://rss.dw.com/rdf/rss-en-all"},
 
     # =========================================================================
     # ✈️ AVIATION & TRANSPORT
@@ -150,10 +154,10 @@ RSS_FEEDS = [
     # =========================================================================
     # 📰 TRAVEL INDUSTRY NEWS (NEW 2026-01-21) - NO CLEANERS YET
     # =========================================================================
-    # {"name": "BREAKING_TRAVEL_NEWS", "url": "https://feeds.feedburner.com/breakingtravelnews"},
-    # {"name": "ETURBONEWS", "url": "https://www.eturbonews.com/feed/"},
-    # {"name": "TRAVELPULSE", "url": "https://www.travelpulse.com/rss"},
-    # {"name": "AIR_CURRENT", "url": "https://theaircurrent.com/feed/"},
+    {"name": "BREAKING_TRAVEL_NEWS", "url": "https://feeds.feedburner.com/breakingtravelnews"},
+    {"name": "ETURBONEWS", "url": "https://www.eturbonews.com/feed/"},
+    {"name": "TRAVELPULSE", "url": "https://www.travelpulse.com/rss"},
+    {"name": "AIR_CURRENT", "url": "https://theaircurrent.com/feed/"},
 
 
     # =========================================================================
@@ -164,12 +168,12 @@ RSS_FEEDS = [
     # =========================================================================
     # 🇩🇪 GERMANY - Travel Trade - NO CLEANER YET
     # =========================================================================
-    # {"name": "FVW", "url": "https://www.fvw.de/feed"},
+    {"name": "FVW", "url": "https://www.fvw.de/feed"},
 
     # =========================================================================
     # 🇬🇧 UK - Additional Travel - NO CLEANER YET
     # =========================================================================
-    # {"name": "INDEPENDENT_TRAVEL", "url": "https://www.independent.co.uk/travel/rss"},
+    {"name": "INDEPENDENT_TRAVEL", "url": "https://www.independent.co.uk/travel/rss"},
 
     # =========================================================================
     # 🇳🇴🇸🇪 SCANDINAVIA (Key Origin Markets) - NO CLEANERS YET
