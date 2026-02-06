@@ -131,10 +131,10 @@ RSS_FEEDS = [
     # 🌍 INTERNATIONAL - General News
     # =========================================================================
     {"name": "AL_JAZEERA", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
-    {"name": "AP_NEWS", "url": "https://feedx.net/rss/ap.xml"},
+    # {"name": "AP_NEWS", "url": "https://feedx.net/rss/ap.xml"},  # DISABLED: 3rd-party proxy, scraping blocked, no usable content
     {"name": "EURONEWS_NEWS", "url": "https://pt.euronews.com/rss?format=mrss&level=theme&name=news"},
     {"name": "EURONEWS_TRAVEL", "url": "https://pt.euronews.com/rss?format=mrss&level=vertical&name=travel"},
-    {"name": "REUTERS", "url": "https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best"},
+    # {"name": "REUTERS", "url": "https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best"},  # DISABLED: No official RSS since 2020
     {"name": "FRANCE24", "url": "https://www.france24.com/en/rss"},
     {"name": "DW_NEWS", "url": "https://rss.dw.com/rdf/rss-en-all"},
 
