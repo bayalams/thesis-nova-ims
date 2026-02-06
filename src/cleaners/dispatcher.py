@@ -136,6 +136,18 @@ except ImportError:
     print("[WARNING] Could not import clean_portugal_resident")
     clean_portugal_resident = None
 
+try:
+    from .clean_jornal_negocios import clean_jornal_negocios
+except ImportError:
+    print("[WARNING] Could not import clean_jornal_negocios")
+    clean_jornal_negocios = None
+
+try:
+    from .clean_jornal_economico import clean_jornal_economico
+except ImportError:
+    print("[WARNING] Could not import clean_jornal_economico")
+    clean_jornal_economico = None
+
 
 # ==============================================================================
 #                           SOURCE SPECIFIC CLEANERS (INLINE)
@@ -279,6 +291,10 @@ def clean_and_enrich_text(text, meta):
             cleaned_body = clean_portugal_news(text, meta)
         elif 'PORTUGAL_RESIDENT' in source and clean_portugal_resident:
             cleaned_body = clean_portugal_resident(text, meta)
+        elif 'JORNAL_NEGOCIOS' in source and clean_jornal_negocios:
+            cleaned_body = clean_jornal_negocios(text, meta)
+        elif 'JORNAL_ECONOMICO' in source and clean_jornal_economico:
+            cleaned_body = clean_jornal_economico(text, meta)
         elif 'RTP_NOTICIAS' in source and clean_rtp:
             cleaned_body = clean_rtp(text, meta)
         elif 'SAPO' in source and clean_sapo:
