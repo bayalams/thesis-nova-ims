@@ -39,7 +39,7 @@ from pathlib import Path       # Built-in library for file path handling
 
 # External libraries (install with pip)
 import chromadb                # Vector database (pip install chromadb)
-from openai import AzureOpenAI
+from openai import OpenAI, AzureOpenAI
 
 # =============================================================================
 # CONFIGURATION
@@ -55,8 +55,9 @@ CHROMA_DIR = "data/vectordb"
 # Collection name in ChromaDB
 COLLECTION_NAME = "tourism_knowledge"
 
-# AzureOpenAI embedding model
-EMBEDDING_MODEL = os.environ.get("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
+# Runtime-selected provider/model (set in main)
+PROVIDER = None
+EMBEDDING_MODEL = None
 
 # Maximum chunk size (in characters)
 # OpenAI recommends chunks of ~500-1000 tokens
@@ -75,31 +76,118 @@ MAX_CONTENT_LENGTH = 200000
 # HELPER FUNCTIONS
 # =============================================================================
 
-def get_openai_client():
+def mask_api_key(api_key):
     """
-    Create an Azure OpenAI client.
+    Return a masked API key prefix for logs.
+    """
+    if not api_key:
+        return "<missing>"
+    return f"{api_key[:8]}..."
+
+
+def resolve_provider(cli_provider):
+    """
+    Resolve which provider to use for embeddings.
+
+    Priority:
+    1) --provider
+    2) EMBEDDING_PROVIDER environment variable
+    3) LLM_PROVIDER environment variable
+    4) auto-detection
+    """
+    provider = cli_provider
+    if not provider:
+        provider = os.environ.get("EMBEDDING_PROVIDER")
+    if not provider:
+        provider = os.environ.get("LLM_PROVIDER", "auto")
+
+    provider = provider.strip().lower()
+    valid = {"auto", "openai", "azure"}
+    if provider not in valid:
+        print(f"[ERROR] Invalid provider '{provider}'.")
+        print("[ERROR] Valid options: auto, openai, azure")
+        raise SystemExit(1)
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    azure_key = os.environ.get("AZURE_OPENAI_API_KEY")
+
+    if provider == "openai":
+        if not openai_key:
+            print("[ERROR] OPENAI_API_KEY is missing.")
+            raise SystemExit(1)
+        return "openai"
+
+    if provider == "azure":
+        if not azure_endpoint or not azure_key:
+            print("[ERROR] Azure credentials are missing.")
+            print("Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY.")
+            raise SystemExit(1)
+        return "azure"
+
+    # Auto mode: prefer OpenAI if available (more stable default)
+    if openai_key:
+        return "openai"
+    if azure_endpoint and azure_key:
+        return "azure"
+
+    print("[ERROR] Could not auto-detect provider.")
+    print("Provide one of:")
+    print("  - OPENAI_API_KEY")
+    print("  - AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY")
+    raise SystemExit(1)
+
+
+def get_embedding_model(provider):
+    """
+    Get embedding model/deployment name for chosen provider.
+    """
+    if provider == "azure":
+        return os.environ.get("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
+    return os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
+
+
+def get_openai_client(provider):
+    """
+    Create an OpenAI or Azure OpenAI client.
     
     The credentials are read from environment variables.
     """
-    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-    
-    if not endpoint or not api_key:
-        print("[ERROR] Azure OpenAI credentials not found!")
-        print()
-        print("Please set these environment variables:")
-        print("  export AZURE_OPENAI_ENDPOINT='https://your-resource.openai.azure.com/'")
-        print("  export AZURE_OPENAI_API_KEY='your-api-key'")
-        print()
+    if provider == "azure":
+        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+
+        if not endpoint or not api_key:
+            print("[ERROR] Azure OpenAI credentials not found!")
+            print("Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY.")
+            raise SystemExit(1)
+
+        print("[INFO] Provider: azure")
+        print(f"[INFO] Azure endpoint: {endpoint}")
+        print(f"[INFO] Azure API key prefix: {mask_api_key(api_key)}")
+        print(f"[INFO] Azure API version: {api_version}")
+        return AzureOpenAI(
+            azure_endpoint=endpoint,
+            api_key=api_key,
+            api_version=api_version
+        )
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+    if not api_key:
+        print("[ERROR] OpenAI API key not found!")
+        print("Set OPENAI_API_KEY.")
         raise SystemExit(1)
-    
-    print("[INFO] Azure OpenAI credentials loaded")
-    return AzureOpenAI(
-        azure_endpoint=endpoint,
-        api_key=api_key,
-        api_version=api_version
-    )
+
+    print("[INFO] Provider: openai")
+    print(f"[INFO] OpenAI API key prefix: {mask_api_key(api_key)}")
+    if base_url:
+        print(f"[INFO] OpenAI base URL: {base_url}")
+        return OpenAI(api_key=api_key, base_url=base_url)
+
+    print("[INFO] OpenAI base URL: https://api.openai.com/v1")
+    return OpenAI(api_key=api_key)
 
 
 def load_documents(source_filter=None):
@@ -289,9 +377,17 @@ def main():
     """
     Main function that runs the embedder.
     """
+    global PROVIDER, EMBEDDING_MODEL
+
     # Parse command line arguments
     import argparse
     parser = argparse.ArgumentParser(description="Embed documents into ChromaDB")
+    parser.add_argument(
+        "--provider",
+        choices=["auto", "openai", "azure"],
+        default=None,
+        help="Embedding provider selection (default: EMBEDDING_PROVIDER/LLM_PROVIDER/auto)",
+    )
     parser.add_argument(
         "--reset", 
         action="store_true", 
@@ -313,9 +409,16 @@ def main():
     print("DOCUMENT EMBEDDER - Starting")
     print("=" * 60)
     print()
+
+    # Step 0: Resolve provider + model
+    PROVIDER = resolve_provider(args.provider)
+    EMBEDDING_MODEL = get_embedding_model(PROVIDER)
+    print(f"[INFO] Selected provider: {PROVIDER}")
+    print(f"[INFO] Embedding model/deployment: {EMBEDDING_MODEL}")
+    print()
     
     # Step 1: Set up OpenAI client
-    client = get_openai_client()
+    client = get_openai_client(PROVIDER)
     print()
     
     
