@@ -148,6 +148,54 @@ except ImportError:
     print("[WARNING] Could not import clean_jornal_economico")
     clean_jornal_economico = None
 
+try:
+    from .clean_diario_noticias import clean_diario_noticias
+except ImportError:
+    print("[WARNING] Could not import clean_diario_noticias")
+    clean_diario_noticias = None
+
+try:
+    from .clean_dw_news import clean_dw_news
+except ImportError:
+    print("[WARNING] Could not import clean_dw_news")
+    clean_dw_news = None
+
+try:
+    from .clean_france24 import clean_france24
+except ImportError:
+    print("[WARNING] Could not import clean_france24")
+    clean_france24 = None
+
+try:
+    from .clean_breaking_travel_news import clean_breaking_travel_news
+except ImportError:
+    print("[WARNING] Could not import clean_breaking_travel_news")
+    clean_breaking_travel_news = None
+
+try:
+    from .clean_independent_travel import clean_independent_travel
+except ImportError:
+    print("[WARNING] Could not import clean_independent_travel")
+    clean_independent_travel = None
+
+try:
+    from .clean_ap_news import clean_ap_news
+except ImportError:
+    print("[WARNING] Could not import clean_ap_news")
+    clean_ap_news = None
+
+try:
+    from .clean_eturbonews import clean_eturbonews
+except ImportError:
+    print("[WARNING] Could not import clean_eturbonews")
+    clean_eturbonews = None
+
+try:
+    from .clean_air_current import clean_air_current
+except ImportError:
+    print("[WARNING] Could not import clean_air_current")
+    clean_air_current = None
+
 
 # ==============================================================================
 #                           SOURCE SPECIFIC CLEANERS (INLINE)
@@ -295,6 +343,22 @@ def clean_and_enrich_text(text, meta):
             cleaned_body = clean_jornal_negocios(text, meta)
         elif 'JORNAL_ECONOMICO' in source and clean_jornal_economico:
             cleaned_body = clean_jornal_economico(text, meta)
+        elif 'DIARIO_NOTICIAS' in source and clean_diario_noticias:
+            cleaned_body = clean_diario_noticias(text, meta)
+        elif 'DW_NEWS' in source and clean_dw_news:
+            cleaned_body = clean_dw_news(text, meta)
+        elif 'FRANCE24' in source and clean_france24:
+            cleaned_body = clean_france24(text, meta)
+        elif 'BREAKING_TRAVEL_NEWS' in source and clean_breaking_travel_news:
+            cleaned_body = clean_breaking_travel_news(text, meta)
+        elif 'INDEPENDENT_TRAVEL' in source and clean_independent_travel:
+            cleaned_body = clean_independent_travel(text, meta)
+        elif 'AP_NEWS' in source and clean_ap_news:
+            cleaned_body = clean_ap_news(text, meta)
+        elif 'ETURBONEWS' in source and clean_eturbonews:
+            cleaned_body = clean_eturbonews(text, meta)
+        elif 'AIR_CURRENT' in source and clean_air_current:
+            cleaned_body = clean_air_current(text, meta)
         elif 'RTP_NOTICIAS' in source and clean_rtp:
             cleaned_body = clean_rtp(text, meta)
         elif 'SAPO' in source and clean_sapo:
