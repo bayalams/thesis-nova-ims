@@ -36,6 +36,7 @@ import json        # Built-in library to work with JSON data
 import os          # Built-in library to work with files and folders
 from datetime import datetime  # Built-in library to work with dates and times
 from pathlib import Path       # Built-in library for file path handling
+import re
 
 # External libraries (install with pip)
 import chromadb                # Vector database (pip install chromadb)
@@ -190,6 +191,48 @@ def get_openai_client(provider):
     return OpenAI(api_key=api_key)
 
 
+def normalize_tags_for_metadata(tags):
+    """
+    Convert tags to a stable string for vector DB metadata.
+    """
+    if isinstance(tags, list):
+        cleaned = [str(t).strip() for t in tags if str(t).strip()]
+        return ", ".join(cleaned)
+    if isinstance(tags, str):
+        return tags.strip()
+    return ""
+
+
+def normalize_date_for_metadata(meta):
+    """
+    Pick a compact date (YYYY-MM-DD when possible) from article metadata.
+    """
+    candidates = [
+        meta.get("date"),
+        meta.get("published"),
+        meta.get("updated"),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        s = str(raw).strip()
+        if not s:
+            continue
+        # Fast path for ISO-like date prefix.
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            return s[:10]
+        # RFC-like dates often contain day/month/year tokens.
+        # Try datetime parser for strings already normalized by Python.
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        # Last fallback: return raw string so metadata is never empty if present.
+        return s
+    return ""
+
+
 def load_documents(source_filter=None):
     """
     Load all documents from our data directories.
@@ -222,6 +265,7 @@ def load_documents(source_filter=None):
                 content = doc.get("text", "")
                 
                 if content and len(content) > 100:
+                    meta = doc.get("metadata", {}) or {}
                     documents.append({
                         "id": doc.get("id"),
                         "type": "news",
@@ -229,6 +273,8 @@ def load_documents(source_filter=None):
                         "title": doc.get("metadata", {}).get("title", ""),
                         "url": doc.get("link"),
                         "content": content,
+                        "date": normalize_date_for_metadata(meta),
+                        "tags": normalize_tags_for_metadata(meta.get("tags")),
                     })
             except Exception as e:
                 print(f"[WARNING] Failed to load {filepath}: {e}")
@@ -498,6 +544,8 @@ def main():
                     "doc_id": doc["id"],
                     "type": doc["type"],
                     "source": doc["source"],
+                    "date": doc.get("date", ""),
+                    "tags": doc.get("tags", ""),
                     "title": doc["title"],
                     "url": doc["url"] or "",
                     "chunk_index": j,
