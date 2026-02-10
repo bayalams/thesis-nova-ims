@@ -1,6 +1,7 @@
 .venv/
 archive/
 chromadb/
+data/vectordb_azure
 data/*
 .env
 __pycache__/
