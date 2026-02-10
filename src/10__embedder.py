@@ -51,7 +51,7 @@ NEWS_DIR = "data/articles"
 WIKI_DIR = "data/wiki"
 
 # Output directory for ChromaDB
-CHROMA_DIR = "data/vectordb"
+CHROMA_DIR = os.environ.get("CHROMA_DIR", "data/vectordb")
 
 # Collection name in ChromaDB
 COLLECTION_NAME = "tourism_knowledge"
