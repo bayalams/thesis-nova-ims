@@ -77,7 +77,7 @@ APP_CONFIG = {}
 # =============================================================================
 
 # ChromaDB settings
-CHROMA_DIR = "data/vectordb"
+CHROMA_DIR = os.environ.get("CHROMA_DIR", "data/vectordb")
 COLLECTION_NAME = "tourism_knowledge"
 
 # How many documents to retrieve
