@@ -432,6 +432,12 @@ def main():
         default=False,
         help="Re-scrape articles even if they already exist"
     )
+    parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help="Only scrape articles from this source (e.g. AL_JAZEERA)"
+    )
     args = parser.parse_args()
     
     # Handle skip-existing flags
@@ -482,6 +488,16 @@ def main():
     for source, articles in articles_by_source.items():
         print(f"[INFO]   - {source}: {len(articles)} articles")
     print()
+    
+    # Filter to specific source if --source is given
+    if args.source:
+        source_upper = args.source.upper()
+        if source_upper not in articles_by_source:
+            print(f"[ERROR] Source '{args.source}' not found. Available: {', '.join(sorted(articles_by_source.keys()))}")
+            return
+        articles_by_source = {source_upper: articles_by_source[source_upper]}
+        print(f"[INFO] Filtered to source: {source_upper} ({len(articles_by_source[source_upper])} articles)")
+        print()
     
     # Step 4: Build list of articles to scrape, respecting per-source limit
     articles_to_scrape = []
