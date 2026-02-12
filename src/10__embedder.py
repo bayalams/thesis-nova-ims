@@ -59,6 +59,7 @@ COLLECTION_NAME = "tourism_knowledge"
 # Runtime-selected provider/model (set in main)
 PROVIDER = None
 EMBEDDING_MODEL = None
+EMBEDDING_DIMS = None  # Optional dimension override (e.g. 1536 for reduced 3-large)
 
 # Maximum chunk size (in characters)
 # OpenAI recommends chunks of ~500-1000 tokens
@@ -346,6 +347,34 @@ def chunk_text(text, chunk_size, overlap):
     return chunks
 
 
+def chunk_text_recursive(text, chunk_size, overlap):
+    """
+    Split text into chunks using LangChain's RecursiveCharacterTextSplitter.
+    
+    Tries to split at natural boundaries in this priority order:
+    1. Paragraph breaks ("\n\n")
+    2. Line breaks ("\n")
+    3. Sentence endings (". ")
+    4. Word boundaries (" ")
+    
+    PARAMETERS:
+    - text: The text to split
+    - chunk_size: Maximum size of each chunk
+    - overlap: Number of characters to overlap
+    
+    RETURNS:
+    - A list of text chunks
+    """
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap,
+        separators=["\n\n", "\n", ". ", " "],
+    )
+    return splitter.split_text(text)
+
+
 def create_embedding(client, text):
     """
     Create an embedding for a piece of text using OpenAI API.
@@ -357,10 +386,13 @@ def create_embedding(client, text):
     RETURNS:
     - A list of numbers (the embedding vector)
     """
-    response = client.embeddings.create(
-        model=EMBEDDING_MODEL,
-        input=text
-    )
+    kwargs = {
+        "model": EMBEDDING_MODEL,
+        "input": text,
+    }
+    if EMBEDDING_DIMS is not None:
+        kwargs["dimensions"] = EMBEDDING_DIMS
+    response = client.embeddings.create(**kwargs)
     
     return response.data[0].embedding
 
@@ -423,7 +455,7 @@ def main():
     """
     Main function that runs the embedder.
     """
-    global PROVIDER, EMBEDDING_MODEL
+    global PROVIDER, EMBEDDING_MODEL, EMBEDDING_DIMS, CHROMA_DIR, MAX_CHUNK_SIZE, CHUNK_OVERLAP
 
     # Parse command line arguments
     import argparse
@@ -449,6 +481,42 @@ def main():
         action="store_true",
         help="Embed full articles without chunking (each article = 1 embedding)"
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="Override chunk size in characters (default: 2000)"
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=None,
+        help="Override chunk overlap in characters (default: 200)"
+    )
+    parser.add_argument(
+        "--chunk-strategy",
+        choices=["char", "recursive"],
+        default="char",
+        help="Chunking strategy: 'char' (fixed character) or 'recursive' (smart boundaries)"
+    )
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help="Override embedding model name (e.g. text-embedding-3-small)"
+    )
+    parser.add_argument(
+        "--embedding-dims",
+        type=int,
+        default=None,
+        help="Request reduced embedding dimensions (e.g. 1536 for compressed 3-large)"
+    )
+    parser.add_argument(
+        "--db-dir",
+        type=str,
+        default=None,
+        help="Override ChromaDB output directory (default: from CHROMA_DIR env or data/vectordb)"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -456,11 +524,33 @@ def main():
     print("=" * 60)
     print()
 
-    # Step 0: Resolve provider + model
+    # Step 0: Resolve provider + model + configuration overrides
     PROVIDER = resolve_provider(args.provider)
     EMBEDDING_MODEL = get_embedding_model(PROVIDER)
+    
+    # Apply CLI overrides
+    if args.embedding_model:
+        EMBEDDING_MODEL = args.embedding_model
+    if args.embedding_dims:
+        EMBEDDING_DIMS = args.embedding_dims
+    if args.db_dir:
+        global CHROMA_DIR
+        CHROMA_DIR = args.db_dir
+    if args.chunk_size is not None:
+        global MAX_CHUNK_SIZE
+        MAX_CHUNK_SIZE = args.chunk_size
+    if args.chunk_overlap is not None:
+        global CHUNK_OVERLAP
+        CHUNK_OVERLAP = args.chunk_overlap
+    
     print(f"[INFO] Selected provider: {PROVIDER}")
     print(f"[INFO] Embedding model/deployment: {EMBEDDING_MODEL}")
+    if EMBEDDING_DIMS:
+        print(f"[INFO] Embedding dimensions: {EMBEDDING_DIMS} (reduced)")
+    print(f"[INFO] Chunk strategy: {'no chunking' if args.no_chunk else args.chunk_strategy}")
+    if not args.no_chunk:
+        print(f"[INFO] Chunk size: {MAX_CHUNK_SIZE} chars / Overlap: {CHUNK_OVERLAP} chars")
+    print(f"[INFO] Database directory: {CHROMA_DIR}")
     print()
     
     # Step 1: Set up OpenAI client
@@ -523,35 +613,49 @@ def main():
         if args.no_chunk:
             chunks = [doc["content"]]  # Full article as single chunk
             print(f"[INFO]   Using full article (no chunking)")
+        elif args.chunk_strategy == "recursive":
+            chunks = chunk_text_recursive(doc["content"], MAX_CHUNK_SIZE, CHUNK_OVERLAP)
+            print(f"[INFO]   Split into {len(chunks)} chunks (recursive)")
         else:
             chunks = chunk_text(doc["content"], MAX_CHUNK_SIZE, CHUNK_OVERLAP)
             print(f"[INFO]   Split into {len(chunks)} chunks")
         
         # Process each chunk
-        for j, chunk in enumerate(chunks):
-            # Create unique ID for this chunk
-            chunk_id = f"{doc['id']}_chunk_{j}"
-            
-            # Create embedding
-            embedding = create_embedding(client, chunk)
-            
-            # Store in ChromaDB
-            collection.add(
-                ids=[chunk_id],
-                embeddings=[embedding],
-                documents=[chunk],
-                metadatas=[{
-                    "doc_id": doc["id"],
-                    "type": doc["type"],
-                    "source": doc["source"],
-                    "date": doc.get("date", ""),
-                    "tags": doc.get("tags", ""),
-                    "title": doc["title"],
-                    "url": doc["url"] or "",
-                    "chunk_index": j,
-                    "total_chunks": len(chunks),
-                }]
-            )
+        try:
+            for j, chunk in enumerate(chunks):
+                # Create unique ID for this chunk
+                chunk_id = f"{doc['id']}_chunk_{j}"
+                
+                # Create embedding
+                embedding = create_embedding(client, chunk)
+                
+                # Store in ChromaDB
+                collection.add(
+                    ids=[chunk_id],
+                    embeddings=[embedding],
+                    documents=[chunk],
+                    metadatas=[{
+                        "doc_id": doc["id"],
+                        "type": doc["type"],
+                        "source": doc["source"],
+                        "date": doc.get("date", ""),
+                        "tags": doc.get("tags", ""),
+                        "title": doc["title"],
+                        "url": doc["url"] or "",
+                        "chunk_index": j,
+                        "total_chunks": len(chunks),
+                    }]
+                )
+        except Exception as e:
+            error_msg = str(e)
+            if "maximum context length" in error_msg or "too many tokens" in error_msg.lower():
+                print(f"[SKIP]   Article too long for embedding model ({len(doc['content']):,} chars)")
+                print(f"[SKIP]   Consider using chunking for this article")
+                skipped_docs += 1
+                print()
+                continue
+            else:
+                raise
         
         total_chunks += len(chunks)
         print(f"[INFO]   Added to database")
