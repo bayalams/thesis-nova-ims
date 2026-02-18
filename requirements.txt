@@ -15,3 +15,4 @@ requests        # HTTP requests for Wikipedia and ScrapingBee
 chromadb        # Local vector database
 openai          # OpenAI API (embeddings + LLM)
 flask           # Simple web framework
+langchain-text-splitters  # Smart text chunking (recursive splitting)

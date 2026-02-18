@@ -260,6 +260,38 @@ def article_already_scraped(article_id, output_dir):
     return os.path.exists(filepath)
 
 
+def find_failed_articles(output_dir):
+    """
+    Scan the articles directory for previously failed scrapes.
+    
+    These are articles where scrapingbee.success == false (e.g. timeouts).
+    
+    PARAMETERS:
+    - output_dir: Directory where scraped articles are saved
+    
+    RETURNS:
+    - A list of tuples: (filepath, article_data) for each failed article
+    """
+    failed = []
+    articles_dir = Path(output_dir)
+    
+    if not articles_dir.exists():
+        return failed
+    
+    for filepath in articles_dir.glob("*.json"):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            sb = data.get("scrapingbee", {})
+            if sb.get("success") == False:
+                failed.append((str(filepath), data))
+        except Exception:
+            continue
+    
+    return failed
+
+
 def should_scrape(article):
     """
     Check if an article should be scraped based on its metadata.
@@ -438,6 +470,12 @@ def main():
         default=None,
         help="Only scrape articles from this source (e.g. AL_JAZEERA)"
     )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        default=False,
+        help="Re-scrape only articles that previously failed (e.g. timeouts)"
+    )
     args = parser.parse_args()
     
     # Handle skip-existing flags
@@ -449,7 +487,9 @@ def main():
     print()
     
     # Show what options are active
-    if args.per_source:
+    if args.retry_failed:
+        print("[INFO] Mode: RETRY FAILED - Re-scraping previously failed articles")
+    elif args.per_source:
         print(f"[INFO] Mode: Scrape up to {args.per_source} articles PER SOURCE")
     elif args.limit:
         print(f"[INFO] Mode: Scrape up to {args.limit} articles TOTAL")
@@ -462,82 +502,126 @@ def main():
     print("[INFO] ScrapingBee API key loaded")
     print()
     
-    # Step 2: Find all JSONL files
-    jsonl_files = find_latest_jsonl_files(INPUT_DIR)
-    
-    if not jsonl_files:
-        print("[ERROR] No JSONL files found. Run 01__indexer.py first!")
-        return
-    
-    print()
-    
-    # Step 3: Load articles and organize by source
-    # We'll use a dictionary: { "PUBLICO": [article1, article2, ...], ... }
-    articles_by_source = {}
-    
-    for jsonl_path in jsonl_files:
-        articles = load_articles_from_jsonl(jsonl_path)
-        for article in articles:
-            source = article.get("source", "UNKNOWN")
-            if source not in articles_by_source:
-                articles_by_source[source] = []
-            articles_by_source[source].append(article)
-    
-    print()
-    print(f"[INFO] Found {len(articles_by_source)} sources:")
-    for source, articles in articles_by_source.items():
-        print(f"[INFO]   - {source}: {len(articles)} articles")
-    print()
-    
-    # Filter to specific source if --source is given
-    if args.source:
-        source_upper = args.source.upper()
-        if source_upper not in articles_by_source:
-            print(f"[ERROR] Source '{args.source}' not found. Available: {', '.join(sorted(articles_by_source.keys()))}")
+    # =========================================================================
+    # RETRY-FAILED MODE: scan existing articles for failed scrapes
+    # =========================================================================
+    if args.retry_failed:
+        failed_articles = find_failed_articles(OUTPUT_DIR)
+        
+        # Optionally filter by source
+        if args.source:
+            source_upper = args.source.upper()
+            failed_articles = [(fp, d) for fp, d in failed_articles if d.get("source", "").upper() == source_upper]
+        
+        print(f"[INFO] Found {len(failed_articles)} failed articles to retry")
+        
+        if not failed_articles:
+            print("[INFO] No failed articles found. Nothing to retry!")
             return
-        articles_by_source = {source_upper: articles_by_source[source_upper]}
-        print(f"[INFO] Filtered to source: {source_upper} ({len(articles_by_source[source_upper])} articles)")
+        
+        # Show breakdown by source
+        from collections import Counter
+        source_counts = Counter(d.get("source", "UNKNOWN") for _, d in failed_articles)
+        for src, cnt in source_counts.most_common():
+            print(f"[INFO]   - {src}: {cnt} failed")
         print()
-    
-    # Step 4: Build list of articles to scrape, respecting per-source limit
-    articles_to_scrape = []
-    
-    for source, articles in articles_by_source.items():
-        source_count = 0
         
-        for article in articles:
-            link = article.get("link")
-            if not link:
-                continue
+        # Apply limit if specified
+        if args.limit and len(failed_articles) > args.limit:
+            failed_articles = failed_articles[:args.limit]
+            print(f"[INFO] Limited to: {len(failed_articles)} articles")
+        
+        # Build articles_to_scrape from failed articles
+        # We reconstruct the article metadata from the saved JSON
+        articles_to_scrape = []
+        for filepath, data in failed_articles:
+            article_meta = data.get("metadata", {})
+            article_meta["link"] = data.get("link", article_meta.get("link", ""))
+            article_meta["source"] = data.get("source", article_meta.get("source", "UNKNOWN"))
+            article_id = data.get("id", create_article_id(article_meta["link"]))
+            source = data.get("source", "UNKNOWN")
+            articles_to_scrape.append((article_meta, article_id, source))
+    
+    # =========================================================================
+    # NORMAL MODE: discover articles from JSONL files
+    # =========================================================================
+    else:
+        # Step 2: Find all JSONL files
+        jsonl_files = find_latest_jsonl_files(INPUT_DIR)
+        
+        if not jsonl_files:
+            print("[ERROR] No JSONL files found. Run 01__indexer.py first!")
+            return
+        
+        print()
+        
+        # Step 3: Load articles and organize by source
+        # We'll use a dictionary: { "PUBLICO": [article1, article2, ...], ... }
+        articles_by_source = {}
+        
+        for jsonl_path in jsonl_files:
+            articles = load_articles_from_jsonl(jsonl_path)
+            for article in articles:
+                source = article.get("source", "UNKNOWN")
+                if source not in articles_by_source:
+                    articles_by_source[source] = []
+                articles_by_source[source].append(article)
+        
+        print()
+        print(f"[INFO] Found {len(articles_by_source)} sources:")
+        for source, articles in articles_by_source.items():
+            print(f"[INFO]   - {source}: {len(articles)} articles")
+        print()
+        
+        # Filter to specific source if --source is given
+        if args.source:
+            source_upper = args.source.upper()
+            if source_upper not in articles_by_source:
+                print(f"[ERROR] Source '{args.source}' not found. Available: {', '.join(sorted(articles_by_source.keys()))}")
+                return
+            articles_by_source = {source_upper: articles_by_source[source_upper]}
+            print(f"[INFO] Filtered to source: {source_upper} ({len(articles_by_source[source_upper])} articles)")
+            print()
+        
+        # Step 4: Build list of articles to scrape, respecting per-source limit
+        articles_to_scrape = []
+        
+        for source, articles in articles_by_source.items():
+            source_count = 0
+            
+            for article in articles:
+                link = article.get("link")
+                if not link:
+                    continue
 
-            # SKIP CHECK (User Request: Exclusions before scraping)
-            if not should_scrape(article):
-                # print(f"[INFO] Skipping excluded article: {link}")
-                continue
+                # SKIP CHECK (User Request: Exclusions before scraping)
+                if not should_scrape(article):
+                    # print(f"[INFO] Skipping excluded article: {link}")
+                    continue
+                
+                article_id = create_article_id(link)
+                
+                # Skip if already scraped (unless --no-skip-existing)
+                if skip_existing and article_already_scraped(article_id, OUTPUT_DIR):
+                    continue
+                
+                # Check per-source limit
+                if args.per_source and source_count >= args.per_source:
+                    break
+                
+                articles_to_scrape.append((article, article_id, source))
+                source_count += 1
             
-            article_id = create_article_id(link)
-            
-            # Skip if already scraped (unless --no-skip-existing)
-            if skip_existing and article_already_scraped(article_id, OUTPUT_DIR):
-                continue
-            
-            # Check per-source limit
-            if args.per_source and source_count >= args.per_source:
-                break
-            
-            articles_to_scrape.append((article, article_id, source))
-            source_count += 1
+            if args.per_source:
+                print(f"[INFO] {source}: selected {source_count} articles (limit: {args.per_source})")
         
-        if args.per_source:
-            print(f"[INFO] {source}: selected {source_count} articles (limit: {args.per_source})")
-    
-    print()
-    print(f"[INFO] Total articles to scrape: {len(articles_to_scrape)}")
-    
-    # Apply global limit if specified
-    if args.limit and len(articles_to_scrape) > args.limit:
-        articles_to_scrape = articles_to_scrape[:args.limit]
-        print(f"[INFO] Limited to: {len(articles_to_scrape)} articles (global limit)")
+        print()
+        print(f"[INFO] Total articles to scrape: {len(articles_to_scrape)}")
+        
+        # Apply global limit if specified
+        if args.limit and len(articles_to_scrape) > args.limit:
+            articles_to_scrape = articles_to_scrape[:args.limit]
+            print(f"[INFO] Limited to: {len(articles_to_scrape)} articles (global limit)")
     
     if len(articles_to_scrape) == 0:
         print("[INFO] No new articles to scrape!")
