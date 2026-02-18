@@ -32,6 +32,7 @@ help:
 	@echo "  index         - Step 1: Collect RSS feed links"
 	@echo "  scrape        - Step 2: Scrape article content (needs SCRAPINGBEE_API_KEY)"
 	@echo "  scrape-sample - Step 2: Scrape 2 articles per source"
+	@echo "  scrape-retry  - Step 2: Re-scrape only previously failed articles"
 	@echo "  wiki          - Step 3: Fetch Wikipedia articles"
 	@echo "  wiki-full     - Step 3: Fetch Wikipedia + categories"
 	@echo ""
@@ -94,6 +95,17 @@ scrape-sample:
 	fi
 	$(PYTHON) src/02__scraper.py --per-source 2
 
+scrape-retry:
+	@echo "============================================================"
+	@echo "Step 2: Re-scraping Failed Articles"
+	@echo "============================================================"
+	@if [ -z "$$SCRAPINGBEE_API_KEY" ]; then \
+		echo "[ERROR] SCRAPINGBEE_API_KEY not set"; \
+		echo "Run: export SCRAPINGBEE_API_KEY='your_key'"; \
+		exit 1; \
+	fi
+	$(PYTHON) src/02__scraper.py --retry-failed
+
 wiki:
 	@echo "============================================================"
 	@echo "Step 3: Wikipedia Fetcher"
@@ -126,6 +138,39 @@ embed:
 	@echo "============================================================"
 	@echo "[INFO] Credential checks run inside src/10__embedder.py"
 	$(PYTHON) src/10__embedder.py
+
+# --- Test Configurations for Thesis Evaluation ---
+# Each target creates a separate vector database for comparison
+
+embed-test-nochunk:
+	@echo "============================================================"
+	@echo "Test: No Chunking (full articles)"
+	@echo "============================================================"
+	$(PYTHON) src/10__embedder.py --provider $(PROVIDER) --no-chunk --db-dir data/vectordb_nochunk --reset
+
+embed-test-small:
+	@echo "============================================================"
+	@echo "Test: Small Chunks (500 chars / 100 overlap)"
+	@echo "============================================================"
+	$(PYTHON) src/10__embedder.py --provider $(PROVIDER) --chunk-size 500 --chunk-overlap 100 --db-dir data/vectordb_small_chunks --reset
+
+embed-test-recursive:
+	@echo "============================================================"
+	@echo "Test: Recursive Chunking (2000 chars / 200 overlap)"
+	@echo "============================================================"
+	$(PYTHON) src/10__embedder.py --provider $(PROVIDER) --chunk-strategy recursive --db-dir data/vectordb_recursive --reset
+
+embed-test-small-model:
+	@echo "============================================================"
+	@echo "Test: text-embedding-3-small (1536 dims)"
+	@echo "============================================================"
+	$(PYTHON) src/10__embedder.py --provider $(PROVIDER) --embedding-model text-embedding-3-small --db-dir data/vectordb_small_model --reset
+
+embed-test-reduced-dims:
+	@echo "============================================================"
+	@echo "Test: text-embedding-3-large at 1536 dims"
+	@echo "============================================================"
+	$(PYTHON) src/10__embedder.py --provider $(PROVIDER) --embedding-dims 1536 --db-dir data/vectordb_large_reduced --reset
 
 web:
 	@echo "============================================================"
@@ -161,4 +206,4 @@ clean-all: clean
 # PHONY TARGETS
 # =============================================================================
 
-.PHONY: help install index scrape scrape-sample wiki wiki-full all update embed web web-wiki rag clean clean-all
+.PHONY: help install index scrape scrape-sample scrape-retry wiki wiki-full all update embed embed-test-nochunk embed-test-small embed-test-recursive embed-test-small-model embed-test-reduced-dims web web-wiki rag clean clean-all

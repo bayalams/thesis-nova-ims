@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../../../azure-openai-connection-test"
+		},
+		{
+			"path": ".."
+		}
+	],
+	"settings": {}
+}
