@@ -5,3 +5,4 @@ data/vectordb_azure
 data/*
 .env
 __pycache__/
+docs/methodology_section_draft.md
