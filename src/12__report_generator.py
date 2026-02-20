@@ -177,9 +177,10 @@ def build_chat_params(model_name, token_limit=4000):
 
     if is_reasoning_model(model_name):
         # Reasoning models include thought tokens in the limit.
-        # If the default 4000 is passed, bump it up significantly.
+        # If the default 4000 is passed, bump it up (but not too high
+        # to avoid exhausting Azure S0 rate limits per request).
         if token_limit == 4000:
-            token_limit = 40000
+            token_limit = 16000
         params["max_completion_tokens"] = token_limit
     else:
         params["temperature"] = 0.7
@@ -319,7 +320,7 @@ def parse_article_date(article):
     meta = article.get("metadata", {})
 
     # Try these fields in order
-    date_fields = ["scraped_at", "date", "published", "indexed_at"]
+    date_fields = ["scraped_at", "date", "published", "published_at", "indexed_at"]
 
     for field in date_fields:
         value = meta.get(field)
@@ -1152,6 +1153,11 @@ def generate_map_reduce_report(client, articles, collection, max_iterations, req
             batch_summaries.append(f"--- Batch {batch_num} Summary ---\n{summary}")
             print(f"[REQ {request_id}] [{label}] Batch {batch_num} summary: {len(summary)} chars")
 
+        # Cooldown between batches for reasoning models (high token usage)
+        if is_reasoning_model(APP_CONFIG["llm_model"]) and batch_num < len(batches):
+            print(f"[REQ {request_id}] [{label}] Cooling down 10s (reasoning model)...")
+            time.sleep(10)
+
     if not batch_summaries:
         print(f"[REQ {request_id}] [{label}] [ERROR] All batches failed")
         return None
@@ -1162,6 +1168,11 @@ def generate_map_reduce_report(client, articles, collection, max_iterations, req
     # =========================================================================
     # PHASE 2: REDUCE — Synthesize all summaries into final report
     # =========================================================================
+
+    # Extra cooldown before the reduce call (largest single request)
+    if is_reasoning_model(APP_CONFIG["llm_model"]):
+        print(f"[REQ {request_id}] [{label}] Cooling down 30s before reduce (reasoning model)...")
+        time.sleep(30)
 
     print()
     print(f"[REQ {request_id}] [{label}] Starting reduce phase...")
@@ -2638,6 +2649,13 @@ def main():
         help="Only start the web viewer, skip report generation"
     )
 
+    parser.add_argument(
+        "--cap",
+        type=int,
+        default=None,
+        help="Cap the number of articles to process (default: no limit, use all)"
+    )
+
     args = parser.parse_args()
 
     print("=" * 60)
@@ -2697,6 +2715,12 @@ def main():
     # Step 4: Load recent articles
     print()
     articles = load_recent_articles(hours=args.hours)
+
+    # Apply optional cap for testing
+    if args.cap and len(articles) > args.cap:
+        print(f"[INFO] Capping articles from {len(articles)} to {args.cap} (--cap)")
+        articles = articles[:args.cap]
+
     print()
 
     if not articles:
