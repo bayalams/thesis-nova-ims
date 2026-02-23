@@ -118,8 +118,9 @@ IMPORTANT — CITATION RULES:
 3. Example: "Tourism arrivals in Lisbon grew 12% [Source 3] while the Algarve saw record hotel occupancy [Source 7]."
 4. If multiple sources confirm the same fact, cite all of them: [Source 1, 3]
 5. NEVER state a fact without a citation — this is critical for verification
-6. The source numbers correspond to the article numbers provided to you
-7. Do NOT add a sources/references section at the end — this will be generated automatically
+6. The source numbers are GLOBALLY UNIQUE and PRE-ASSIGNED — use them EXACTLY as given with each article
+7. Do NOT renumber or reassign source numbers — Source 42 must always refer to the article labeled [Source 42]
+8. Do NOT add a sources/references section at the end — this will be generated automatically
 
 ADDITIONAL RULES:
 1. ONLY use information from the provided articles — do not invent facts
@@ -182,11 +183,135 @@ def build_chat_params(model_name, token_limit=4000):
         if token_limit == 4000:
             token_limit = 16000
         params["max_completion_tokens"] = token_limit
+        params["reasoning_effort"] = "minimal"
     else:
         params["temperature"] = 0.7
         params["max_tokens"] = token_limit
 
     return params
+
+
+def get_int_env(var_name, default_value):
+    """
+    Safely parse an integer environment variable.
+    """
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default_value
+
+    try:
+        return int(raw.strip())
+    except Exception:
+        print(f"[WARNING] Invalid integer for {var_name}: '{raw}' (using {default_value})")
+        return default_value
+
+
+def get_strategy_tuning(strategy_name, default_batch_size=30, default_chars_per_article=1500, default_token_limit=4000):
+    """
+    Return provider-aware tuning knobs for heavy report strategies.
+
+    ENV OVERRIDES (optional):
+    - REPORT_BATCH_SIZE
+    - REPORT_MAX_CHARS_PER_ARTICLE
+    - REPORT_TOKEN_LIMIT
+    - <STRATEGY>_BATCH_SIZE (e.g., MAP_REDUCE_BATCH_SIZE)
+    - <STRATEGY>_MAX_CHARS_PER_ARTICLE
+    - <STRATEGY>_TOKEN_LIMIT
+    """
+    provider = APP_CONFIG.get("provider", "")
+    model_name = APP_CONFIG.get("llm_model", "")
+    reasoning = is_reasoning_model(model_name)
+
+    batch_size = default_batch_size
+    chars_per_article = default_chars_per_article
+    token_limit = default_token_limit
+
+    # Azure deployments (especially S0 + reasoning models) tend to hit
+    # quota/context limits first on map-reduce/progressive prompts.
+    if provider == "azure":
+        if reasoning:
+            batch_size = min(batch_size, 12)
+            chars_per_article = min(chars_per_article, 900)
+            token_limit = min(token_limit, 2200)
+        else:
+            batch_size = min(batch_size, 20)
+            chars_per_article = min(chars_per_article, 1200)
+            token_limit = min(token_limit, 2500)
+
+    # Global overrides
+    batch_size = get_int_env("REPORT_BATCH_SIZE", batch_size)
+    chars_per_article = get_int_env("REPORT_MAX_CHARS_PER_ARTICLE", chars_per_article)
+    token_limit = get_int_env("REPORT_TOKEN_LIMIT", token_limit)
+
+    # Strategy-specific overrides
+    strategy_key = (strategy_name or "").strip().upper().replace("-", "_")
+    if strategy_key:
+        batch_size = get_int_env(f"{strategy_key}_BATCH_SIZE", batch_size)
+        chars_per_article = get_int_env(f"{strategy_key}_MAX_CHARS_PER_ARTICLE", chars_per_article)
+        token_limit = get_int_env(f"{strategy_key}_TOKEN_LIMIT", token_limit)
+
+    # Keep values in sane ranges
+    batch_size = max(1, batch_size)
+    chars_per_article = max(300, chars_per_article)
+    token_limit = max(400, token_limit)
+
+    return {
+        "batch_size": batch_size,
+        "chars_per_article": chars_per_article,
+        "token_limit": token_limit,
+    }
+
+
+def adjust_bad_request_kwargs(current_kwargs, error_text, request_id="", label="LLM"):
+    """
+    Try to recover from known provider/model parameter mismatches.
+    """
+    adjusted = False
+    error_lower = (error_text or "").lower()
+
+    if "temperature" in error_lower and "temperature" in current_kwargs:
+        print(f"[REQ {request_id}] [{label}] [WARNING] Removing unsupported 'temperature' and retrying")
+        current_kwargs.pop("temperature", None)
+        adjusted = True
+
+    if "max_tokens" in error_lower and "max_completion_tokens" in error_lower and "max_tokens" in current_kwargs:
+        print(f"[REQ {request_id}] [{label}] [WARNING] Switching max_tokens -> max_completion_tokens and retrying")
+        current_kwargs["max_completion_tokens"] = current_kwargs.pop("max_tokens")
+        adjusted = True
+
+    if "max_completion_tokens" in error_lower and "max_tokens" in error_lower and "max_completion_tokens" in current_kwargs:
+        print(f"[REQ {request_id}] [{label}] [WARNING] Switching max_completion_tokens -> max_tokens and retrying")
+        current_kwargs["max_tokens"] = current_kwargs.pop("max_completion_tokens")
+        adjusted = True
+
+    if "reasoning_effort" in error_lower and "reasoning_effort" in current_kwargs:
+        print(f"[REQ {request_id}] [{label}] [WARNING] Removing unsupported 'reasoning_effort' and retrying")
+        current_kwargs.pop("reasoning_effort", None)
+        adjusted = True
+
+    context_error = (
+        "maximum context length" in error_lower
+        or "context length" in error_lower
+        or "too many tokens" in error_lower
+        or "is too long" in error_lower
+    )
+    if context_error:
+        if "max_completion_tokens" in current_kwargs:
+            old = int(current_kwargs["max_completion_tokens"])
+            new = max(800, old // 2)
+            if new < old:
+                print(f"[REQ {request_id}] [{label}] [WARNING] Reducing max_completion_tokens {old} -> {new} after context error")
+                current_kwargs["max_completion_tokens"] = new
+                adjusted = True
+        elif "max_tokens" in current_kwargs:
+            old = int(current_kwargs["max_tokens"])
+            new = max(400, old // 2)
+            if new < old:
+                print(f"[REQ {request_id}] [{label}] [WARNING] Reducing max_tokens {old} -> {new} after context error")
+                current_kwargs["max_tokens"] = new
+                adjusted = True
+
+    return adjusted
 
 
 def get_host_from_url(url):
@@ -278,6 +403,10 @@ def build_llm_client(provider):
             print("[ERROR] Azure OpenAI credentials not found.")
             print("Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY.")
             raise SystemExit(1)
+
+        if api_version == "2024-02-15-preview":
+            print("[WARNING] AZURE_OPENAI_API_VERSION is still using the old default (2024-02-15-preview).")
+            print("[WARNING] If you use newer deployments/features, set a newer AZURE_OPENAI_API_VERSION explicitly.")
 
         client = AzureOpenAI(
             azure_endpoint=endpoint,
@@ -533,7 +662,73 @@ def build_sources_section(articles, start_index=1):
     return "\n".join(lines)
 
 
-def call_llm(client, messages, tools=None, request_id="", label="LLM"):
+def strip_llm_sources_section(report_text):
+    """
+    Remove any ## Sources or ## References section that the LLM may have
+    generated in its output.
+
+    We auto-generate this section via build_sources_section(), so any
+    LLM-generated version would create duplicates or mismatched numbering.
+
+    PARAMETERS:
+    - report_text: The LLM-generated report markdown
+
+    RETURNS:
+    - The report text with any trailing Sources/References section removed
+    """
+
+    # Match ## Sources or ## References (with optional leading ---)
+    # at the end of the text, possibly followed by numbered items
+    pattern = r'\n---\s*\n+##\s+(Sources|References)\s*\n.*'
+    cleaned = re.sub(pattern, '', report_text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Also handle case without --- separator
+    pattern2 = r'\n##\s+(Sources|References)\s*\n\s*\d+\.\s.*'
+    cleaned = re.sub(pattern2, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+    return cleaned.rstrip()
+
+
+def validate_source_citations(report_text, num_articles, request_id=""):
+    """
+    Scan the report for [Source N] citations and warn if N exceeds the
+    total number of articles. This detects LLM renumbering or hallucination.
+
+    PARAMETERS:
+    - report_text: The report markdown text (before sources section)
+    - num_articles: Total number of articles in the source list
+    - request_id: Correlation ID for log messages
+
+    RETURNS:
+    - None (logs warnings to stdout)
+    """
+
+    # Find all [Source N] or [Source N, M, ...] patterns
+    citations = re.findall(r'\[Source\s+(\d+(?:\s*,\s*\d+)*)\]', report_text)
+
+    all_nums = set()
+    for citation in citations:
+        nums = [int(n.strip()) for n in citation.split(',')]
+        all_nums.update(nums)
+
+    if not all_nums:
+        print(f"[REQ {request_id}] [VALIDATE] No source citations found in report")
+        return
+
+    max_cited = max(all_nums)
+    out_of_range = [n for n in sorted(all_nums) if n > num_articles or n < 1]
+
+    print(f"[REQ {request_id}] [VALIDATE] Found {len(all_nums)} unique source numbers cited (range: 1-{max_cited})")
+    print(f"[REQ {request_id}] [VALIDATE] Total articles in source list: {num_articles}")
+
+    if out_of_range:
+        print(f"[REQ {request_id}] [WARNING] {len(out_of_range)} citation(s) reference non-existent sources: {out_of_range}")
+        print(f"[REQ {request_id}] [WARNING] This may indicate the LLM renumbered sources — verify report accuracy")
+    else:
+        print(f"[REQ {request_id}] [VALIDATE] All citations are within valid range ✓")
+
+
+def call_llm(client, messages, tools=None, request_id="", label="LLM", token_limit=4000):
     """
     Shared wrapper for LLM calls with logging, error handling, and
     automatic retry on 429 rate-limit errors.
@@ -557,16 +752,27 @@ def call_llm(client, messages, tools=None, request_id="", label="LLM"):
         "model": APP_CONFIG["llm_model"],
         "messages": messages,
     }
-    kwargs.update(build_chat_params(APP_CONFIG["llm_model"]))
+    kwargs.update(build_chat_params(APP_CONFIG["llm_model"], token_limit=token_limit))
 
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
+    current_kwargs = dict(kwargs)
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = client.chat.completions.create(**kwargs)
+            response = client.chat.completions.create(**current_kwargs)
             break  # success
+
+        except BadRequestError as e:
+            error_str = str(e)
+            adjusted = adjust_bad_request_kwargs(current_kwargs, error_str, request_id, label)
+            if adjusted and attempt < MAX_RETRIES:
+                continue
+
+            print(f"[REQ {request_id}] [{label}] [ERROR] BadRequestError: {e}")
+            return None
 
         except Exception as e:
             error_str = str(e)
@@ -592,6 +798,7 @@ def call_llm(client, messages, tools=None, request_id="", label="LLM"):
     total_tokens = getattr(usage, "total_tokens", None) if usage else None
     print(f"[REQ {request_id}] [{label}] Latency: {elapsed_ms:.1f} ms")
     print(f"[REQ {request_id}] [{label}] Tokens: {prompt_tokens}/{completion_tokens}/{total_tokens}")
+    print(f"[REQ {request_id}] [{label}] Params: {sorted(current_kwargs.keys())}")
 
     return response
 
@@ -795,7 +1002,9 @@ Use today's date: {today}
         print(f"[REQ {request_id}] [ERROR] Model returned empty response")
         return None
 
-    # Append auto-generated sources section
+    # Strip any sources section the LLM may have added, validate, then append correct sources
+    content = strip_llm_sources_section(content)
+    validate_source_citations(content, len(articles), request_id)
     content += build_sources_section(articles)
 
     return content
@@ -957,7 +1166,9 @@ You may use the search_knowledge_base tool to look up historical articles for ad
                 print(f"[REQ {request_id}] [ERROR] Model returned empty response")
                 return None
 
-            # Append auto-generated sources section
+            # Strip any sources section the LLM may have added, validate, then append correct sources
+            content = strip_llm_sources_section(content)
+            validate_source_citations(content, len(articles), request_id)
             content += build_sources_section(articles)
 
             return content
@@ -1040,7 +1251,9 @@ You may use the search_knowledge_base tool to look up historical articles for ad
         print(f"[REQ {request_id}] [ERROR] Model returned empty response")
         return None
 
-    # Append auto-generated sources section
+    # Strip any sources section the LLM may have added, validate, then append correct sources
+    content = strip_llm_sources_section(content)
+    validate_source_citations(content, len(articles), request_id)
     content += build_sources_section(articles)
 
     return content
@@ -1089,7 +1302,8 @@ Focus on:
 - Notable events or policy changes
 - Any statistics or data points
 
-Be concise but capture all important points. Cite article titles when referencing specific facts.
+Be concise but capture all important points.
+CRITICAL: When citing facts, use the EXACT [Source N] numbers provided with each article. Do NOT renumber them.
 If no articles are relevant to tourism, say "No tourism-relevant content in this batch."
 """
 
@@ -1112,12 +1326,22 @@ def generate_map_reduce_report(client, articles, collection, max_iterations, req
     RETURNS:
     - The report as a markdown string, or None if failed
     """
-    BATCH_SIZE = 30
+    tuning = get_strategy_tuning(
+        "map_reduce",
+        default_batch_size=30,
+        default_chars_per_article=1500,
+        default_token_limit=3000,
+    )
+    BATCH_SIZE = tuning["batch_size"]
+    BATCH_CHARS = tuning["chars_per_article"]
+    TOKEN_LIMIT = tuning["token_limit"]
     label = "MAP-REDUCE"
 
     total_started = time.time()
     print(f"[REQ {request_id}] [{label}] Starting map-reduce over {len(articles)} articles")
     print(f"[REQ {request_id}] [{label}] Batch size: {BATCH_SIZE}")
+    print(f"[REQ {request_id}] [{label}] Max chars/article: {BATCH_CHARS}")
+    print(f"[REQ {request_id}] [{label}] Token limit/call: {TOKEN_LIMIT}")
 
     # =========================================================================
     # PHASE 1: MAP — Summarize each batch
@@ -1136,14 +1360,24 @@ def generate_map_reduce_report(client, articles, collection, max_iterations, req
         print()
         print(f"[REQ {request_id}] [{label}] --- Batch {batch_num}/{len(batches)} ({len(batch)} articles) ---")
 
-        articles_text = format_articles_for_prompt(batch, max_chars_per_article=1500, start_index=(batch_num - 1) * BATCH_SIZE + 1)
+        articles_text = format_articles_for_prompt(
+            batch,
+            max_chars_per_article=BATCH_CHARS,
+            start_index=(batch_num - 1) * BATCH_SIZE + 1,
+        )
 
         messages = [
             {"role": "system", "content": BATCH_SUMMARY_PROMPT},
             {"role": "user", "content": f"Here are the articles:\n\n{articles_text}"},
         ]
 
-        response = call_llm(client, messages, request_id=request_id, label=label)
+        response = call_llm(
+            client,
+            messages,
+            request_id=request_id,
+            label=label,
+            token_limit=TOKEN_LIMIT,
+        )
         if not response:
             print(f"[REQ {request_id}] [{label}] [WARNING] Batch {batch_num} failed, skipping")
             continue
@@ -1205,7 +1439,14 @@ Total articles analyzed: {len(articles)}
         for iteration in range(1, max_iterations + 1):
             print(f"[REQ {request_id}] [{label}] Reduce iteration {iteration}/{max_iterations}")
 
-            response = call_llm(client, messages, tools=REACT_TOOLS, request_id=request_id, label=label)
+            response = call_llm(
+                client,
+                messages,
+                tools=REACT_TOOLS,
+                request_id=request_id,
+                label=label,
+                token_limit=TOKEN_LIMIT,
+            )
             if not response:
                 return None
 
@@ -1232,11 +1473,23 @@ Total articles analyzed: {len(articles)}
         else:
             # Max iterations reached, force final
             messages.append({"role": "user", "content": "Please produce the final report now."})
-            response = call_llm(client, messages, request_id=request_id, label=label)
+            response = call_llm(
+                client,
+                messages,
+                request_id=request_id,
+                label=label,
+                token_limit=TOKEN_LIMIT,
+            )
             content = extract_content(response) if response else ""
     else:
         # No RAG available — simple synthesis
-        response = call_llm(client, messages, request_id=request_id, label=label)
+        response = call_llm(
+            client,
+            messages,
+            request_id=request_id,
+            label=label,
+            token_limit=TOKEN_LIMIT,
+        )
         content = extract_content(response) if response else ""
 
     total_elapsed = (time.time() - total_started) * 1000
@@ -1247,7 +1500,9 @@ Total articles analyzed: {len(articles)}
     if not content.strip():
         return None
 
-    # Append auto-generated sources section (all articles, globally numbered)
+    # Strip any sources section the LLM may have added, validate, then append correct sources
+    content = strip_llm_sources_section(content)
+    validate_source_citations(content, len(articles), request_id)
     content += build_sources_section(articles)
 
     return content
@@ -1398,7 +1653,9 @@ When ready, produce the Daily Tourism Intelligence Report for {today}.
     if not content.strip():
         return None
 
-    # Append auto-generated sources section
+    # Strip any sources section the LLM may have added, validate, then append correct sources
+    content = strip_llm_sources_section(content)
+    validate_source_citations(content, len(articles), request_id)
     content += build_sources_section(articles)
 
     return content
@@ -1537,6 +1794,13 @@ def generate_hybrid_report(client, articles, collection, max_iterations, request
 
 PROGRESSIVE_DRAFT_PROMPT = """You are a tourism intelligence analyst building a report progressively.
 
+CRITICAL CITATION RULE:
+Each article has a pre-assigned, globally unique source number (e.g., [Source 42]).
+You MUST use the EXACT source numbers provided with each article.
+Do NOT renumber or reassign source numbers when updating the draft.
+These numbers are permanent identifiers that correspond to the final source list.
+When merging new batch content into the existing draft, PRESERVE ALL existing source numbers.
+
 Below is your CURRENT DRAFT REPORT (may be empty if this is the first batch):
 
 {current_draft}
@@ -1555,6 +1819,8 @@ YOUR TASK:
 3. Maintain the exact report structure below
 4. Add new information from this batch while keeping the best content from the previous draft
 5. If the new batch has no tourism-relevant content, keep the draft unchanged
+6. ALWAYS use the exact [Source N] numbers from the articles — NEVER renumber them
+7. Do NOT add a Sources or References section at the end — this is generated automatically
 
 OUTPUT the updated FULL report in this exact markdown structure:
 
@@ -1585,12 +1851,22 @@ def generate_progressive_report(client, articles, collection, max_iterations, re
     RETURNS:
     - The report as a markdown string, or None if failed
     """
-    BATCH_SIZE = 30
+    tuning = get_strategy_tuning(
+        "progressive",
+        default_batch_size=30,
+        default_chars_per_article=1500,
+        default_token_limit=3000,
+    )
+    BATCH_SIZE = tuning["batch_size"]
+    BATCH_CHARS = tuning["chars_per_article"]
+    TOKEN_LIMIT = tuning["token_limit"]
     label = "PROGRESSIVE"
     total_started = time.time()
 
     print(f"[REQ {request_id}] [{label}] Starting progressive over {len(articles)} articles")
     print(f"[REQ {request_id}] [{label}] Batch size: {BATCH_SIZE}")
+    print(f"[REQ {request_id}] [{label}] Max chars/article: {BATCH_CHARS}")
+    print(f"[REQ {request_id}] [{label}] Token limit/call: {TOKEN_LIMIT}")
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -1611,7 +1887,11 @@ def generate_progressive_report(client, articles, collection, max_iterations, re
         print()
         print(f"[REQ {request_id}] [{label}] --- Batch {batch_num}/{len(batches)} ({len(batch)} articles) ---")
 
-        batch_text = format_articles_for_prompt(batch, max_chars_per_article=1500, start_index=(batch_num - 1) * BATCH_SIZE + 1)
+        batch_text = format_articles_for_prompt(
+            batch,
+            max_chars_per_article=BATCH_CHARS,
+            start_index=(batch_num - 1) * BATCH_SIZE + 1,
+        )
 
         prompt_text = PROGRESSIVE_DRAFT_PROMPT.replace("{current_draft}", current_draft)
         prompt_text = prompt_text.replace("{batch_text}", batch_text)
@@ -1621,7 +1901,13 @@ def generate_progressive_report(client, articles, collection, max_iterations, re
             {"role": "user", "content": prompt_text},
         ]
 
-        response = call_llm(client, messages, request_id=request_id, label=label)
+        response = call_llm(
+            client,
+            messages,
+            request_id=request_id,
+            label=label,
+            token_limit=TOKEN_LIMIT,
+        )
         if not response:
             print(f"[REQ {request_id}] [{label}] [WARNING] Batch {batch_num} failed, keeping current draft")
             continue
@@ -1650,7 +1936,14 @@ def generate_progressive_report(client, articles, collection, max_iterations, re
         for iteration in range(1, max_iterations + 1):
             print(f"[REQ {request_id}] [{label}] Enrichment iteration {iteration}/{max_iterations}")
 
-            response = call_llm(client, messages, tools=REACT_TOOLS, request_id=request_id, label=label)
+            response = call_llm(
+                client,
+                messages,
+                tools=REACT_TOOLS,
+                request_id=request_id,
+                label=label,
+                token_limit=TOKEN_LIMIT,
+            )
             if not response:
                 break
 
@@ -1679,7 +1972,13 @@ def generate_progressive_report(client, articles, collection, max_iterations, re
         else:
             # Max iterations, force final
             messages.append({"role": "user", "content": "Please produce the final report now."})
-            response = call_llm(client, messages, request_id=request_id, label=label)
+            response = call_llm(
+                client,
+                messages,
+                request_id=request_id,
+                label=label,
+                token_limit=TOKEN_LIMIT,
+            )
             if response:
                 enriched = extract_content(response)
                 if enriched.strip():
@@ -1693,7 +1992,9 @@ def generate_progressive_report(client, articles, collection, max_iterations, re
     if not current_draft.strip():
         return None
 
-    # Append auto-generated sources section (all articles, globally numbered)
+    # Strip any sources section the LLM may have added, validate, then append correct sources
+    current_draft = strip_llm_sources_section(current_draft)
+    validate_source_citations(current_draft, len(articles), request_id)
     current_draft += build_sources_section(articles)
 
     return current_draft
