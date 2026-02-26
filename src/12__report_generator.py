@@ -289,6 +289,18 @@ def adjust_bad_request_kwargs(current_kwargs, error_text, request_id="", label="
         current_kwargs.pop("reasoning_effort", None)
         adjusted = True
 
+    tool_error = (
+        "tool_choice" in error_lower
+        or "function_call" in error_lower
+        or "function call" in error_lower
+        or ("tool" in error_lower and ("unsupported" in error_lower or "not support" in error_lower or "invalid" in error_lower))
+    )
+    if tool_error and ("tools" in current_kwargs or "tool_choice" in current_kwargs):
+        print(f"[REQ {request_id}] [{label}] [WARNING] Disabling tools for this request and retrying")
+        current_kwargs.pop("tools", None)
+        current_kwargs.pop("tool_choice", None)
+        adjusted = True
+
     context_error = (
         "maximum context length" in error_lower
         or "context length" in error_lower
@@ -1335,6 +1347,14 @@ def generate_map_reduce_report(client, articles, collection, max_iterations, req
     BATCH_SIZE = tuning["batch_size"]
     BATCH_CHARS = tuning["chars_per_article"]
     TOKEN_LIMIT = tuning["token_limit"]
+    REDUCE_TOKEN_LIMIT = get_int_env(
+        "MAP_REDUCE_REDUCE_TOKEN_LIMIT",
+        max(TOKEN_LIMIT, 4200 if is_reasoning_model(APP_CONFIG["llm_model"]) else TOKEN_LIMIT),
+    )
+    SUMMARY_CHAR_CAP = get_int_env(
+        "MAP_REDUCE_BATCH_SUMMARY_CHAR_CAP",
+        1200 if APP_CONFIG.get("provider") == "azure" else 2000,
+    )
     label = "MAP-REDUCE"
 
     total_started = time.time()
@@ -1342,6 +1362,8 @@ def generate_map_reduce_report(client, articles, collection, max_iterations, req
     print(f"[REQ {request_id}] [{label}] Batch size: {BATCH_SIZE}")
     print(f"[REQ {request_id}] [{label}] Max chars/article: {BATCH_CHARS}")
     print(f"[REQ {request_id}] [{label}] Token limit/call: {TOKEN_LIMIT}")
+    print(f"[REQ {request_id}] [{label}] Reduce token limit: {REDUCE_TOKEN_LIMIT}")
+    print(f"[REQ {request_id}] [{label}] Batch summary char cap: {SUMMARY_CHAR_CAP}")
 
     # =========================================================================
     # PHASE 1: MAP — Summarize each batch
@@ -1384,6 +1406,8 @@ def generate_map_reduce_report(client, articles, collection, max_iterations, req
 
         summary = extract_content(response)
         if summary.strip():
+            if len(summary) > SUMMARY_CHAR_CAP:
+                summary = summary[:SUMMARY_CHAR_CAP] + "...(truncated for reduce)"
             batch_summaries.append(f"--- Batch {batch_num} Summary ---\n{summary}")
             print(f"[REQ {request_id}] [{label}] Batch {batch_num} summary: {len(summary)} chars")
 
@@ -1445,7 +1469,7 @@ Total articles analyzed: {len(articles)}
                 tools=REACT_TOOLS,
                 request_id=request_id,
                 label=label,
-                token_limit=TOKEN_LIMIT,
+                token_limit=REDUCE_TOKEN_LIMIT,
             )
             if not response:
                 return None
@@ -1453,6 +1477,21 @@ Total articles analyzed: {len(articles)}
             tool_calls = extract_tool_calls(response)
             if not tool_calls:
                 content = extract_content(response)
+                if not content.strip():
+                    print(f"[REQ {request_id}] [{label}] [WARNING] Empty reduce output; forcing direct final report retry")
+                    retry_messages = list(messages)
+                    retry_messages.append({
+                        "role": "user",
+                        "content": "Return the final complete report now in markdown. Do not call tools.",
+                    })
+                    retry_response = call_llm(
+                        client,
+                        retry_messages,
+                        request_id=request_id,
+                        label=label,
+                        token_limit=max(REDUCE_TOKEN_LIMIT, 5200),
+                    )
+                    content = extract_content(retry_response) if retry_response else ""
                 break
 
             # Process tool calls
@@ -1478,7 +1517,7 @@ Total articles analyzed: {len(articles)}
                 messages,
                 request_id=request_id,
                 label=label,
-                token_limit=TOKEN_LIMIT,
+                token_limit=REDUCE_TOKEN_LIMIT,
             )
             content = extract_content(response) if response else ""
     else:
@@ -1488,7 +1527,7 @@ Total articles analyzed: {len(articles)}
             messages,
             request_id=request_id,
             label=label,
-            token_limit=TOKEN_LIMIT,
+            token_limit=REDUCE_TOKEN_LIMIT,
         )
         content = extract_content(response) if response else ""
 
@@ -3059,10 +3098,26 @@ def main():
         print(f"[INFO] Max iterations: {args.max_iterations}")
         print()
 
-        # Load ChromaDB for ReAct mode
-        chroma_collection = get_chromadb_collection()
-        print(f"[INFO] Vector database loaded from {CHROMA_DIR}")
-        print()
+        # Load ChromaDB for ReAct mode. For map-reduce/progressive we can
+        # continue without RAG if the vector DB is unavailable.
+        try:
+            chroma_collection = get_chromadb_collection()
+            print(f"[INFO] Vector database loaded from {CHROMA_DIR}")
+            print()
+        except SystemExit:
+            if strategy in {"map-reduce", "progressive"}:
+                print(f"[WARNING] Vector database unavailable at {CHROMA_DIR}; continuing without RAG enrichment.")
+                print()
+                chroma_collection = None
+            else:
+                raise
+        except Exception as e:
+            if strategy in {"map-reduce", "progressive"}:
+                print(f"[WARNING] Could not open vector database ({e}); continuing without RAG enrichment.")
+                print()
+                chroma_collection = None
+            else:
+                raise
 
         # Dispatch to the right strategy function
         if strategy == "map-reduce":
